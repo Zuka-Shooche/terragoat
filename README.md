@@ -1,6 +1,6 @@
 # Projet DevSecOps — TerraGoat
 
-Etudiant : DURBEC Luca - Pinto AXEL
+Etudiants : DURBEC Luca et PINTO Axel
 Formation : Mastere Infra — Ynov Aix-en-Provence 2025/2026
 Module : DevSecOps
 Encadrant : Damien Montmoulinex
