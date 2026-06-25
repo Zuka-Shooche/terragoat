@@ -1,6 +1,6 @@
 # Projet DevSecOps — TerraGoat
 
-Etudiant : DURBEC Luca - PINTO Axel
+Etudiant : DURBEC Luca
 Formation : Mastere Infra — Ynov Aix-en-Provence 2025/2026
 Module : DevSecOps
 Encadrant : Damien Montmoulinex
@@ -79,11 +79,13 @@ Job 2 - Detection de secrets avec Gitleaks :
   - Detection des credentials et secrets exposes
   - Rapport des secrets trouves dans les logs CI
 
-Job 3 - Validation Terraform :
+Job 3 - Validation et Plan Terraform :
   - Checkout du code source
   - Installation de Terraform 1.5.7
   - Execution de terraform init
   - Execution de terraform validate
+  - Execution de terraform plan (simulation de deploiement)
+  - Archivage du rapport de plan dans GitHub Actions Artifacts
 
 ---
 
@@ -93,8 +95,8 @@ Outil : Checkov 3.3.2 by Prisma Cloud
 Date d analyse : 2025
 Perimetre : dossier terraform/ (AWS, Azure, GCP, AliCloud, Oracle)
 
-Passed checks : 203
-Failed checks : 467
+Passed checks : 218
+Failed checks : 463
 Skipped checks : 0
 
 Categories de vulnerabilites detectees :
@@ -107,6 +109,9 @@ Categories de vulnerabilites detectees :
 - Versioning non configure sur les buckets
 - Clusters Kubernetes mal configures
 - Instances de base de donnees exposees publiquement
+- Volumes EBS non chiffres
+- Repositories ECR non securises
+- Endpoints EKS publics
 
 ---
 
@@ -118,13 +123,9 @@ Fichier : terraform/aws/providers.tf
 Type : Cle AWS Access Key hardcodee
 Valeur exposee : AKIAIOSFODNN7EXAMPLE
 
-Fichier : terraform/aws/providers.tf
-Type : Chaine Base64 haute entropie
-Description : Secret AWS hardcode dans la configuration du provider
-
 Fichier : terraform/aws/lambda.tf
 Type : Cle AWS Access Key hardcodee
-Description : Credentials AWS hardcodes dans les variables d environnement Lambda
+Description : Credentials AWS hardcodes dans les variables Lambda
 
 Fichier : terraform/aws/lambda.tf
 Type : Chaine Base64 haute entropie
@@ -133,7 +134,7 @@ Description : Secret hardcode dans la configuration Lambda
 Fichier : terraform/aws/ec2.tf
 Type : Cle AWS hardcodee dans user_data
 Valeur exposee : AKIAIOSFODNN7EXAMAAA
-Description : Credentials AWS injectes en clair dans le script de demarrage EC2
+Description : Credentials AWS injectes en clair dans le script EC2
 
 Fichier : terraform/azure/sql.tf
 Type : Chaine Base64 haute entropie
@@ -169,43 +170,29 @@ Code corrige :
     region = "us-west-1"
   }
 
-Correction appliquee :
-Suppression des cles hardcodees. Les credentials sont desormais geres
-via des variables d environnement ou le fichier ~/.aws/credentials.
-
-Bonne pratique :
-Ne jamais stocker de credentials dans le code source. Utiliser AWS IAM Roles,
-des variables d environnement ou un gestionnaire de secrets comme AWS Secrets Manager.
+Correction : Suppression des cles hardcodees.
+Bonne pratique : Utiliser AWS IAM Roles ou variables d environnement.
 
 ---
 
 ### Vulnerabilite 2 — Bucket S3 non securise
 
-Checks Checkov : CKV_AWS_19, CKV_AWS_21, CKV2_AWS_6
+Checks Checkov : CKV_AWS_19, CKV_AWS_21, CKV2_AWS_6, CKV_AWS_18
 Fichier : terraform/aws/s3.tf
 Ressource : aws_s3_bucket.data
 Criticite : HAUTE
 
 Description :
-Le bucket S3 nomme "data" presentait plusieurs problemes de securite critiques.
-Il etait accessible publiquement, les donnees n etaient pas chiffrees au repos,
-il n y avait pas de versioning et aucun log d acces n etait configure.
-
-Problemes identifies :
-- CKV_AWS_19 : Pas de chiffrement des donnees au repos
-- CKV_AWS_21 : Versioning non active
-- CKV2_AWS_6 : Acces public non bloque
-- CKV_AWS_18 : Pas de logs d acces
+Le bucket S3 data etait accessible publiquement, non chiffre,
+sans versioning et sans logs d acces.
 
 Corrections appliquees :
-1. Ajout du chiffrement KMS via aws_s3_bucket_server_side_encryption_configuration
-2. Activation du versioning via aws_s3_bucket_versioning
-3. Blocage de tout acces public via aws_s3_bucket_public_access_block
-4. Activation des logs d acces via aws_s3_bucket_logging
+- Chiffrement KMS via aws_s3_bucket_server_side_encryption_configuration
+- Versioning via aws_s3_bucket_versioning
+- Blocage acces public via aws_s3_bucket_public_access_block
+- Logs via aws_s3_bucket_logging
 
-Bonne pratique :
-Tout bucket S3 contenant des donnees sensibles doit imperativement
-etre chiffre, prive, dispose de versioning et de logs d acces.
+Bonne pratique : Tout bucket S3 sensible doit etre chiffre et prive.
 
 ---
 
@@ -217,56 +204,114 @@ Ressource : aws_security_group.web-node
 Criticite : HAUTE
 
 Description :
-Le security group associe a l instance EC2 autorisait les connexions SSH
-sur le port 22 et HTTP sur le port 80 depuis n importe quelle adresse IP
-sur internet (0.0.0.0/0). Cela expose l instance a des attaques par force
-brute, des scans de ports et des tentatives d intrusion depuis internet.
+Le security group autorisait SSH (port 22) et HTTP (port 80)
+depuis n importe quelle IP sur internet (0.0.0.0/0).
 
 Code vulnerable :
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+  cidr_blocks = ["0.0.0.0/0"]
 
 Code corrige :
-  ingress {
-    description = "SSH depuis le reseau interne uniquement"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/8"]
-  }
+  cidr_blocks = ["10.0.0.0/8"]
 
-Correction appliquee :
-Creation d un nouveau security group securise limitant l acces SSH et HTTP
-au reseau interne uniquement (10.0.0.0/8).
+Correction : Creation d un security group restreint au reseau interne.
+Bonne pratique : Ne jamais ouvrir SSH a tout internet.
 
-Bonne pratique :
-Les ports SSH et RDP ne doivent jamais etre ouverts a tout internet.
-Utiliser un bastion host ou un VPN pour les acces administrateurs.
+---
+
+### Vulnerabilite 4 — Instance RDS accessible publiquement
+
+Check Checkov : CKV_AWS_17
+Fichier : terraform/aws/db-app.tf
+Ressource : aws_db_instance.default
+Criticite : CRITIQUE
+
+Description :
+L instance RDS etait configuree avec publicly_accessible = true,
+ce qui expose la base de donnees directement sur internet.
+N importe qui peut tenter de se connecter a la base de donnees.
+
+Code vulnerable :
+  publicly_accessible = true
+
+Code corrige :
+  publicly_accessible = false
+
+Correction : Creation d une instance RDS securisee avec acces prive uniquement,
+chiffrement active, Multi-AZ, protection contre la suppression et backup.
+Bonne pratique : Une base de donnees ne doit jamais etre exposee sur internet.
+Utiliser un bastion host ou VPN pour l acces administrateur.
+
+---
+
+### Vulnerabilite 5 — Instance RDS non chiffree
+
+Check Checkov : CKV_AWS_16
+Fichier : terraform/aws/db-app.tf
+Ressource : aws_db_instance.default
+Criticite : HAUTE
+
+Description :
+Les donnees stockees dans l instance RDS n etaient pas chiffrees au repos.
+En cas d acces physique aux disques ou de compromission du stockage,
+les donnees seraient lisibles en clair.
+
+Code vulnerable :
+  storage_encrypted = false (non defini)
+
+Code corrige :
+  storage_encrypted = true
+
+Correction : Activation du chiffrement du stockage RDS.
+Bonne pratique : Toutes les bases de donnees doivent avoir le chiffrement
+au repos active, particulierement pour les donnees sensibles.
+
+---
+
+### Vulnerabilite 6 — Secrets hardcodes dans EC2 user_data
+
+Check Checkov : CKV_AWS_46
+Fichier : terraform/aws/ec2.tf
+Ressource : aws_instance.web_host
+Criticite : CRITIQUE
+
+Description :
+Des cles AWS etaient injectees en clair dans le script user_data
+de l instance EC2. Ces donnees sont accessibles via l API de metadonnees
+EC2 sans authentification (IMDSv1).
+
+Valeurs exposees :
+  AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMAAA
+  AWS_SECRET_ACCESS_KEY=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
+
+Code corrige :
+  Suppression des credentials du user_data.
+  Ajout d un IAM Instance Profile pour les permissions EC2.
+
+Correction : Creation d un aws_iam_instance_profile pour gerer
+les permissions EC2 sans credentials hardcodes.
+Bonne pratique : Utiliser IAM Instance Profiles pour les permissions EC2.
+Ne jamais injecter de credentials dans user_data.
 
 ---
 
 ## Vulnerabilites identifiees non corrigees
 
-Ces vulnerabilites ont ete identifiees par Checkov mais n ont pas ete
-corrigees car elles necessitent une infrastructure AWS reelle deployee
-pour etre pleinement traitees en environnement de production.
+Ces vulnerabilites ont ete identifiees mais necessitent
+une infrastructure AWS reelle pour etre corrigees en production.
 
 | Check | Fichier | Description | Criticite |
 |---|---|---|---|
-| CKV_AWS_16 | db-app.tf | Chiffrement RDS non active | Haute |
-| CKV_AWS_17 | db-app.tf | Instance RDS accessible publiquement | Haute |
-| CKV_AWS_37 | eks.tf | Logs EKS control plane non actives | Haute |
+| CKV_AWS_37 | eks.tf | Logs EKS non actives | Haute |
+| CKV_AWS_38 | eks.tf | Endpoint EKS public accessible 0.0.0.0/0 | Haute |
+| CKV_AWS_39 | eks.tf | Endpoint EKS public non desactive | Haute |
 | CKV_AWS_58 | eks.tf | Chiffrement secrets EKS non active | Haute |
+| CKV_AWS_51 | ecr.tf | Tags ECR non immuables | Moyenne |
+| CKV_AWS_163 | ecr.tf | Scan ECR on push non active | Moyenne |
+| CKV_AWS_136 | ecr.tf | ECR non chiffre avec KMS | Moyenne |
 | CKV_AWS_84 | es.tf | Logs Elasticsearch non actives | Moyenne |
 | CKV_AWS_115 | lambda.tf | Lambda sans limite de concurrence | Moyenne |
-| CKV_AWS_157 | rds.tf | RDS sans configuration Multi-AZ | Moyenne |
-| CKV_AWS_161 | db-app.tf | Authentification IAM RDS non activee | Haute |
-| CKV_AWS_92 | elb.tf | Logs ELB non actives | Moyenne |
-| CKV_AWS_51 | ecr.tf | Tags ECR non immuables | Moyenne |
+| CKV_AWS_157 | rds.tf | RDS sans Multi-AZ | Moyenne |
+| CKV_AWS_130 | ec2.tf | Subnets assignent IP publique par defaut | Moyenne |
 
 ---
 
@@ -274,47 +319,49 @@ pour etre pleinement traitees en environnement de production.
 
 ### 1. Shift Left Security
 La securite est integree des le debut du cycle de developpement.
-Chaque push sur le depot declenche automatiquement les analyses de securite.
+Chaque push declenche automatiquement toutes les analyses de securite.
 
 ### 2. Gestion des secrets
 Ne jamais stocker de credentials dans le code source.
-Utiliser des variables d environnement ou un gestionnaire de secrets.
 Detection automatique via Gitleaks a chaque push.
+Utiliser AWS IAM Roles et Instance Profiles.
 
 ### 3. Principe du moindre privilege
-Chaque ressource ne doit avoir acces qu a ce dont elle a besoin.
-Security groups limites au reseau interne. Buckets S3 bloques publiquement.
+Security groups limites au reseau interne.
+Buckets S3 bloques publiquement.
+Bases de donnees non accessibles depuis internet.
 
 ### 4. Chiffrement des donnees
-Toutes les donnees sensibles doivent etre chiffrees au repos et en transit.
-Chiffrement KMS sur les buckets S3. Backend Terraform avec chiffrement active.
+Chiffrement KMS sur les buckets S3.
+Chiffrement active sur les instances RDS.
+Backend Terraform avec chiffrement active.
 
 ### 5. Traçabilite et audit
-Toutes les actions doivent etre tracees et auditables.
-Logging active sur les buckets S3. Rapports archives dans GitHub Actions.
-Historique Git de toutes les modifications apportees.
+Logging active sur les buckets S3.
+Rapports archives dans GitHub Actions Artifacts.
+Historique Git de toutes les modifications.
 
 ### 6. Automatisation de la securite
-La securite ne doit pas dependre d actions manuelles.
-Checkov, Gitleaks et Terraform validate s executent automatiquement a chaque push.
+Checkov, Gitleaks et Terraform s executent automatiquement a chaque push.
+Aucune intervention manuelle requise pour les analyses.
 
 ### 7. Infrastructure as Code
-Toute infrastructure doit etre definie en code, versionnee et auditee.
-Permet la reproductibilite des environnements et la revue de code sur l infrastructure.
+Toute infrastructure definie en code, versionnee et auditee.
+Corrections documentees et tracees dans Git.
 
 ---
 
 ## Rapports de securite
 
-Les rapports sont generes automatiquement a chaque execution du pipeline
-et archives sous forme d Artifacts dans GitHub Actions.
+Les rapports sont generes automatiquement a chaque execution
+et archives dans GitHub Actions Artifacts.
 
 Pour consulter les rapports :
 1. Aller dans l onglet Actions du depot GitHub
 2. Cliquer sur un run du Pipeline DevSecOps TerraGoat
-3. Telecharger l artifact checkov-report dans la section Artifacts
-
-Rapport disponible : checkov-report.json
+3. Telecharger les artifacts disponibles :
+   - checkov-report : rapport JSON Checkov complet
+   - terraform-plan-report : rapport de simulation de deploiement
 
 ---
 
@@ -323,19 +370,19 @@ Rapport disponible : checkov-report.json
 | Dossier / Fichier | Description |
 |---|---|
 | .github/workflows/devsecops.yml | Pipeline CI/CD GitHub Actions |
-| docs/architecture.md | Schema detaille et explication du pipeline |
-| docs/vulnerabilites.md | Liste complete des vulnerabilites identifiees |
-| docs/corrections.md | Corrections appliquees sur le code Terraform |
-| docs/bonnes-pratiques.md | Bonnes pratiques DevSecOps mises en oeuvre |
-| reports/ | Rapports bruts generes automatiquement par le pipeline |
-| terraform/ | Code TerraGoat original intentionnellement vulnerable |
+| docs/architecture.md | Schema detaille du pipeline |
+| docs/vulnerabilites.md | Liste complete des vulnerabilites |
+| docs/corrections.md | Corrections appliquees |
+| docs/bonnes-pratiques.md | Bonnes pratiques DevSecOps |
+| reports/ | Rapports bruts generes par le pipeline |
+| terraform/ | Code TerraGoat avec corrections appliquees |
 
 ---
 
 ## Documentation complementaire
 
 - docs/architecture.md — Architecture detaillee du pipeline CI/CD
-- docs/vulnerabilites.md — Vulnerabilites identifiees et niveau de criticite
+- docs/vulnerabilites.md — Vulnerabilites identifiees et criticite
 - docs/corrections.md — Corrections apportees au code Terraform
 - docs/bonnes-pratiques.md — Bonnes pratiques DevSecOps appliquees
 
